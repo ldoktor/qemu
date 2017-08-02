@@ -18,6 +18,8 @@ import string
 import os
 import sys
 import subprocess
+import tempfile
+
 import qmp.qmp
 
 
@@ -31,8 +33,9 @@ class QEMULaunchError(Exception):
 class QEMUMachine(object):
     '''A QEMU VM'''
 
-    def __init__(self, binary, args=[], wrapper=[], name=None, test_dir="/var/tmp",
-                 monitor_address=None, socket_scm_helper=None, debug=False):
+    def __init__(self, binary, args=[], wrapper=[], name=None,
+                 test_dir="/var/tmp", monitor_address=None,
+                 socket_scm_helper=None, debug=False, arch=None):
         if name is None:
             name = "qemu-%d" % os.getpid()
         if monitor_address is None:
@@ -51,6 +54,9 @@ class QEMUMachine(object):
         self._qemu_full_args = None
         self._created_files = []
         self._pending_shutdown = False
+        self._qmp = None
+        self._arch = arch
+        self._console_address = None
 
     # This can be used to add an unused monitor instance.
     def add_monitor_telnet(self, ip, port):
@@ -126,6 +132,39 @@ class QEMUMachine(object):
                 '-mon', 'chardev=mon,mode=control',
                 '-display', 'none', '-vga', 'none']
 
+    def _create_console(self, console_address):
+        for item in self._args:
+            for option in ['isa-serial', 'spapr-vty', 'sclpconsole']:
+                if option in item:
+                    return []
+
+        chardev = 'socket,id=console,{address},server,nowait'
+        if console_address is None:
+            console_address = tempfile.mktemp()
+            chardev = chardev.format(address='path=%s' %
+                                     console_address)
+        elif isinstance(console_address, tuple):
+            chardev = chardev.format(address='host=%s,port=%s' %
+                                     (console_address[0],
+                                     console_address[1]))
+        else:
+            chardev = chardev.format(address='path=%s' % console_address)
+
+        self._console_address = console_address
+
+        device = '{dev_type},chardev=console'
+        if '86' in self._arch:
+            device = device.format(dev_type='isa-serial')
+        elif 'ppc' in self._arch:
+            device = device.format(dev_type='spapr-vty')
+        elif 's390x' in self._arch:
+            device = device.format(dev_type='sclpconsole')
+        else:
+            return []
+
+        return ['-chardev', chardev,
+                '-device', device]
+
     def _pre_launch(self):
         if (not isinstance(self._monitor_address, tuple) and
                 os.path.exists(self._monitor_address)):
@@ -152,7 +191,7 @@ class QEMUMachine(object):
         while self._created_files:
             self._remove_if_exists(self._created_files.pop())
 
-    def launch(self):
+    def launch(self, console_address=None):
         '''
         Try to launch the VM and make sure we cleanup and expose the
         command line/output in case of exception.
@@ -169,8 +208,10 @@ class QEMUMachine(object):
         try:
             self._iolog = None
             self._qemu_full_args = None
+            bargs = self._base_args()
+            bargs.extend(self._create_console(console_address))
             self._qemu_full_args = (self._wrapper + [self._binary] +
-                                    self._base_args() + self._args)
+                                    bargs + self._args)
             self._launch()
             self._pending_shutdown = True
         except:
