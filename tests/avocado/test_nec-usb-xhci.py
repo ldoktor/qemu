@@ -18,6 +18,7 @@ class TestNecUsbXhci(test.QemuTest):
 
     def setUp(self):
         usbdevice = os.path.join(self.workdir, 'usb.img')
+        self.require_image()
         process.run('dd if=/dev/zero of=%s bs=1M count=10' % usbdevice)
         self.vm.args.extend(['-device', 'pci-bridge,id=bridge1,chassis_nr=1'])
         self.vm.args.extend(['-device', 'nec-usb-xhci,id=xhci1,bus=bridge1,addr=0x3'])
